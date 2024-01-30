@@ -1,50 +1,46 @@
 import os
+import sys
 import requests
+from http import HTTPStatus
 import time
 import telegram
-import io
-import sys
 import logging
 
-from exceptions import ExceptionError, DebugException
+# Без этого импорта не проходят тесты,
+# поэтому в первой версии убрала вызов хэндлера из файла app_logger
 from dotenv import load_dotenv
+import app_logger
+from exceptions import SendExceptionError, NotSendExceptionError
 
-_log_format = ('%(asctime)s - [%(levelname)s] - %(name)s - '
-               '(%(filename)s).%(funcName)s(%(lineno)d) - %(message)s')
 
 load_dotenv()
-s = io.StringIO()
 
 
-PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+PRACTICUM_TOKEN = os.getenv("PRACTICUM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 RETRY_PERIOD = 600
-ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
-HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
+ENDPOINT = "https://practicum.yandex.ru/api/user_api/homework_statuses/"
+HEADERS = {"Authorization": f"OAuth {PRACTICUM_TOKEN}"}
 
 
 HOMEWORK_VERDICTS = {
-    'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
-    'reviewing': 'Работа взята на проверку ревьюером.',
-    'rejected': 'Работа проверена: у ревьюера есть замечания.'
+    "approved": "Работа проверена: ревьюеру всё понравилось. Ура!",
+    "reviewing": "Работа взята на проверку ревьюером.",
+    "rejected": "Работа проверена: у ревьюера есть замечания.",
 }
 
-
-def get_stream_handler():
-    """Настройка хэндлера."""
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.DEBUG)
-    stream_handler.setFormatter(logging.Formatter(_log_format))
-    return stream_handler
+# Не проходят автотесты, если именно в этом файле нет вызова метода getLogger
+# :(
 
 
 def get_logger(name):
     """Настройка логирования."""
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
-    logger.addHandler(get_stream_handler())
+    logger.addHandler(app_logger.get_stream_handler())
+    logger.addHandler(app_logger.get_file_handler())
     return logger
 
 
@@ -53,10 +49,8 @@ logger = get_logger(__name__)
 
 def check_tokens():
     """Проверка наличия всех необходимых токенов."""
-    for key in [PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]:
-        if key is None:
-            logger.critical(f'Переменная {key} не задана')
-            sys.exit()
+    token_list = [PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]
+    return all(token_list)
 
 
 def send_message(bot, message):
@@ -71,101 +65,107 @@ def send_message(bot, message):
 def get_api_answer(timestamp):
     """Запрос данных дз."""
     try:
-        homework_statuses = requests.get(ENDPOINT,
-                                         headers=HEADERS,
-                                         params={'from_date': timestamp})
-        if homework_statuses.status_code == 200:
+        homework_statuses = requests.get(
+            ENDPOINT, headers=HEADERS, params={'from_date': timestamp}
+        )
+        if homework_statuses.status_code == HTTPStatus.OK:
             return homework_statuses.json()
-        elif homework_statuses.status_code == 400:
-            raise ExceptionError(f'{get_api_answer.__name__}: '
-                                 f'{homework_statuses.json()["error"]}')
-        elif homework_statuses.status_code == 401:
-            raise ExceptionError(f'{get_api_answer.__name__}: '
-                                 f'{homework_statuses.json()["message"]}')
+        elif homework_statuses.status_code == HTTPStatus.BAD_REQUEST:
+            raise SendExceptionError(
+                f'{homework_statuses.json()["error"]}'
+            )
+        elif homework_statuses.status_code == HTTPStatus.UNAUTHORIZED:
+            raise SendExceptionError(
+                f'{homework_statuses.json()["message"]}'
+            )
         else:
-            raise ExceptionError(f'{get_api_answer.__name__}: неизвестный '
-                                 'код ошибки')
+            raise SendExceptionError(
+                'неизвестный код ошибки'
+            )
     except Exception as error:
-        raise ExceptionError(f'{get_api_answer.__name__}: {error}') from None
+        raise SendExceptionError(error)
 
 
+# Автотесты проверяют, что функция обязательно выбрасывает TypeErro
+# Из-за этого не получается все ошибки поделить на отправляемы в ТГ
+# и не отправляемые
 def check_response(response):
     """Проверка корректности ответа."""
     try:
         if isinstance(response, dict) is False:
-            raise TypeError(f'{check_response.__name__}'
-                            f':Некорректный тип данных homeworks') from None
-        elif isinstance(response['homeworks'], list) is False:
-            raise TypeError(f'{check_response.__name__}'
-                            f':Некорректный тип данных homeworks') from None
-        elif isinstance(response['homeworks'][0], dict) is False:
-            raise TypeError(f'{check_response.__name__}'
-                            f':Некорректный тип данных homeworks[0]')
+            raise TypeError(
+                'Некорректный тип данных homeworks'
+            ) from None
+        elif isinstance(response["homeworks"], list) is False:
+            raise TypeError(
+                'Некорректный тип данных homeworks'
+            ) from None
+        elif isinstance(response["homeworks"][0], dict) is False:
+            raise TypeError(
+                'Некорректный тип данных homeworks[0]'
+            )
         elif response['homeworks'] == []:
-            return '', ''
+            return "", ""
         else:
             return response['homeworks'][0], response['homeworks'][0]['status']
     except TypeError as error:
-        raise TypeError(error)
+        raise TypeError(error) from None
     except Exception as error:
-        raise ExceptionError(f'{check_response.__name__}: {error}') from None
+        raise SendExceptionError(error)
 
 
 def parse_status(homework):
     """Получение параметров статуса и названия дз."""
     try:
         homework_name = homework['homework_name']
-        print()
         status = homework['status']
         if status not in HOMEWORK_VERDICTS:
-            raise ExceptionError(f'{parse_status.__name__}: {status} '
-                                 'не найден')
+            raise SendExceptionError(f'{status} не найден')
         if status is None:
-            raise ExceptionError(f'{parse_status.__name__}: {status} '
-                                 'не найден')
+            raise SendExceptionError(f'{status} не найден')
         verdict = HOMEWORK_VERDICTS[status]
-        return ('Изменился статус проверки работы '
-                f'"{homework_name}". {verdict}')
+        return f'Изменился статус проверки работы "{homework_name}". {verdict}'
     except Exception as error:
-        raise ExceptionError(f'{parse_status.__name__}: {error}') from None
+        raise SendExceptionError(error) from None
 
 
 def main():
     """Основная логика работы бота."""
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    previous_status = ''
-    error_message = ''
-
+    previous_status = ""
+    error_message = ""
     while True:
+        if check_tokens() is False:
+            logger.critical('Не все токены заданы')
+            sys.exit(1)
         try:
-            check_tokens()
             response = get_api_answer(timestamp)
             check, status = check_response(response)
-            if check == '':
-                raise DebugException('Данные по домашке отсутствуют')
             if status != previous_status:
                 message = parse_status(check)
                 send_message(bot, message)
                 previous_status = status
             else:
-                logger.debug(f'Статус c {status} не изменился,'
-                             'сообщение не отправлено')
-        except ExceptionError as error:
+                logger.debug(
+                    f'Статус c {status} не изменился'
+                )
+        except SendExceptionError as error:
             message = f'Сбой в работе программы 2: {error}'
             if error_message != message:
-                send_message(bot, message)
+                # send_message(bot, message)
                 error_message = message
             logger.error(message)
         except TypeError as error:
             message = f'Сбой в работе программы 1: {error}'
             if error_message != message:
-                send_message(bot, message)
+                # send_message(bot, message)
                 error_message = message
             logger.error(message)
-        except DebugException as debug:
+        except NotSendExceptionError as debug:
             logger.debug(debug)
-        time.sleep(RETRY_PERIOD)
+        finally:
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':

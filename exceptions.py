@@ -1,16 +1,10 @@
-class ExceptionError(Exception):
-    """Класс для уровня ошибок ERROR."""
+class SendExceptionError(Exception):
+    """Класс для уровня ошибок ERROR. Их пересылаем в ТГ."""
 
     pass
 
 
-class CriticalExceptionError(Exception):
-    """Класс для уровня ошибок CRITICAL."""
-
-    pass
-
-
-class DebugException(Exception):
-    """Класс для изменений типа DEBUG."""
+class NotSendExceptionError(Exception):
+    """Остальные ошибки. Их не пересылаем в ТГ."""
 
     pass
